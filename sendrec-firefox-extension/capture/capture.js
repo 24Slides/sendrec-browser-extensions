@@ -60,12 +60,16 @@
       const bgPage = await browser.runtime.getBackgroundPage();
       const thisTab = await browser.tabs.getCurrent();
 
-      // Pick mimeType based on whether audio is actually present in the recording stream.
+      // Pick mimeType based on whether audio is actually present in each stream.
       // Using an opus codec with a video-only stream causes Firefox's MediaRecorder to fail silently.
-      const hasAudio = recordingStream ? recordingStream.getAudioTracks().length > 0 : false;
-      const mimeType = hasAudio
-        ? (MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus') ? 'video/webm;codecs=vp8,opus' : 'video/webm')
-        : (MediaRecorder.isTypeSupported('video/webm;codecs=vp8') ? 'video/webm;codecs=vp8' : 'video/webm');
+      function pickMimeType(stream) {
+        const hasAudio = stream ? stream.getAudioTracks().length > 0 : false;
+        return hasAudio
+          ? (MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus') ? 'video/webm;codecs=vp8,opus' : 'video/webm')
+          : (MediaRecorder.isTypeSupported('video/webm;codecs=vp8') ? 'video/webm;codecs=vp8' : 'video/webm');
+      }
+      const mimeType = pickMimeType(recordingStream);
+      const webcamMimeType = pickMimeType(capturedWebcamStream);
 
       // --- Record screen locally in capture tab ---
       let screenRecorder = null;
@@ -123,7 +127,7 @@
 
       if (capturedWebcamStream) {
         webcamRecorder = new MediaRecorder(capturedWebcamStream, {
-          mimeType,
+          mimeType: webcamMimeType,
           videoBitsPerSecond: 800000
         });
 
@@ -134,7 +138,7 @@
         };
 
         webcamRecorder.onstop = () => {
-          webcamBlob = new Blob(webcamChunks, { type: mimeType });
+          webcamBlob = new Blob(webcamChunks, { type: webcamMimeType });
           webcamDone = true;
           tryUpload();
         };

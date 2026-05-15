@@ -223,6 +223,67 @@ function cleanup() {
   webcamStream = null;
 }
 
+// Fetch with stall detection - aborts if upload doesn't make progress for 60s
+async function fetchWithStallDetection(url, options, timeoutMs, label) {
+  const controller = new AbortController();
+  let stalledTimer = null;
+  let completedOrFailed = false;
+  
+  const cleanup = () => {
+    completedOrFailed = true;
+    if (stalledTimer) clearTimeout(stalledTimer);
+  };
+  
+  // Set stall detector - abort if stuck for 60 seconds
+  stalledTimer = setTimeout(() => {
+    if (!completedOrFailed) {
+      controller.abort();
+    }
+  }, 60000);
+  
+  // Also set main timeout as safety net
+  const mainTimer = setTimeout(() => {
+    if (!completedOrFailed) {
+      controller.abort();
+    }
+  }, timeoutMs);
+  
+  try {
+    const res = await fetch(url, {
+      ...options,
+      signal: controller.signal
+    });
+    cleanup();
+    return res;
+  } catch (err) {
+    cleanup();
+    clearTimeout(mainTimer);
+    if (err && err.name === 'AbortError') {
+      // Determine if it was stall timeout (< 60s) or main timeout
+      const isStall = stalledTimer !== null;
+      if (isStall) {
+        throw new Error(`${label} stalled (no progress for 60s)`);
+      } else {
+        throw new Error(`${label} timed out after ${Math.floor(timeoutMs / 1000)}s`);
+      }
+    }
+    throw err;
+  } finally {
+    cleanup();
+    clearTimeout(mainTimer);
+  }
+}
+
+// Calculate upload timeout based on file size
+// Assumes minimum 100kbps connection speed + 60s buffer
+function getUploadTimeout(fileSizeBytes) {
+  const minSpeedBps = 100 * 1024; // 100 kbps minimum
+  const bufferMs = 60000; // 60s buffer
+  const estimatedMs = (fileSizeBytes / minSpeedBps) * 1000 + bufferMs;
+  // Cap between 3 min and 20 min
+  return Math.min(Math.max(estimatedMs, 180000), 1200000);
+}
+
 async function uploadToSendRec(screenBlob, webcamBlob, mimeType) {
   const config = await chrome.runtime.sendMessage({ type: 'GET_CONFIG' });
   if (!config || !config.serverUrl || !config.accessToken) {
@@ -259,12 +320,12 @@ async function uploadToSendRec(screenBlob, webcamBlob, mimeType) {
     createHeaders['X-Organization-Id'] = config.organizationId;
   }
 
-  const createRes = await fetch(`${serverUrl}/api/videos`, {
+  const createRes = await fetchWithStallDetection(`${serverUrl}/api/videos`, {
     method: 'POST',
     credentials: 'include',
     headers: createHeaders,
     body: JSON.stringify(body)
-  });
+  }, 30000, 'Create video request');
 
   if (!createRes.ok) {
     const errText = await createRes.text();
@@ -277,11 +338,11 @@ async function uploadToSendRec(screenBlob, webcamBlob, mimeType) {
   // Step 2: Upload screen recording to presigned URL
   chrome.runtime.sendMessage({ type: 'OFFSCREEN_UPLOAD_PROGRESS', progress: 30 });
 
-  const uploadRes = await fetch(uploadUrl, {
+  const uploadRes = await fetchWithStallDetection(uploadUrl, {
     method: 'PUT',
     headers: { 'Content-Type': body.contentType },
     body: screenBlob
-  });
+  }, getUploadTimeout(screenBlob.size), 'Screen upload');
 
   if (!uploadRes.ok) {
     throw new Error(`Failed to upload video: ${uploadRes.status}`);
@@ -291,11 +352,11 @@ async function uploadToSendRec(screenBlob, webcamBlob, mimeType) {
 
   // Upload webcam if present
   if (webcamBlob && videoData.webcamUploadUrl) {
-    const wcRes = await fetch(videoData.webcamUploadUrl, {
+    const wcRes = await fetchWithStallDetection(videoData.webcamUploadUrl, {
       method: 'PUT',
       headers: { 'Content-Type': body.webcamContentType },
       body: webcamBlob
-    });
+    }, getUploadTimeout(webcamBlob.size), 'Webcam upload');
     if (!wcRes.ok) {
       console.warn('Webcam upload failed:', wcRes.status);
     }
@@ -304,7 +365,7 @@ async function uploadToSendRec(screenBlob, webcamBlob, mimeType) {
   chrome.runtime.sendMessage({ type: 'OFFSCREEN_UPLOAD_PROGRESS', progress: 90 });
 
   // Step 3: Mark as ready
-  await fetch(`${serverUrl}/api/videos/${id}`, {
+  await fetchWithStallDetection(`${serverUrl}/api/videos/${id}`, {
     method: 'PATCH',
     credentials: 'include',
     headers: {
@@ -312,7 +373,7 @@ async function uploadToSendRec(screenBlob, webcamBlob, mimeType) {
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({ status: 'ready' })
-  });
+  }, 30000, 'Finalize video request');
 
   // Done
   chrome.runtime.sendMessage({

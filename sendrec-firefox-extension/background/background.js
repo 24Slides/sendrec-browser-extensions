@@ -167,6 +167,67 @@ function cleanup() {
   }
 }
 
+// Fetch with stall detection - aborts if upload doesn't make progress for 60s
+async function fetchWithStallDetection(url, options, timeoutMs, label) {
+  const controller = new AbortController();
+  let stalledTimer = null;
+  let completedOrFailed = false;
+  
+  const cleanup = () => {
+    completedOrFailed = true;
+    if (stalledTimer) clearTimeout(stalledTimer);
+  };
+  
+  // Set stall detector - abort if stuck for 60 seconds
+  stalledTimer = setTimeout(() => {
+    if (!completedOrFailed) {
+      controller.abort();
+    }
+  }, 60000);
+  
+  // Also set main timeout as safety net
+  const mainTimer = setTimeout(() => {
+    if (!completedOrFailed) {
+      controller.abort();
+    }
+  }, timeoutMs);
+  
+  try {
+    const res = await fetch(url, {
+      ...options,
+      signal: controller.signal
+    });
+    cleanup();
+    return res;
+  } catch (err) {
+    cleanup();
+    clearTimeout(mainTimer);
+    if (err && err.name === 'AbortError') {
+      // Determine if it was stall timeout (< 60s) or main timeout
+      const isStall = stalledTimer !== null;
+      if (isStall) {
+        throw new Error(`${label} stalled (no progress for 60s)`);
+      } else {
+        throw new Error(`${label} timed out after ${Math.floor(timeoutMs / 1000)}s`);
+      }
+    }
+    throw err;
+  } finally {
+    cleanup();
+    clearTimeout(mainTimer);
+  }
+}
+
+// Calculate upload timeout based on file size
+// Assumes minimum 100kbps connection speed + 60s buffer
+function getUploadTimeout(fileSizeBytes) {
+  const minSpeedBps = 100 * 1024; // 100 kbps minimum
+  const bufferMs = 60000; // 60s buffer
+  const estimatedMs = (fileSizeBytes / minSpeedBps) * 1000 + bufferMs;
+  // Cap between 3 min and 20 min
+  return Math.min(Math.max(estimatedMs, 180000), 1200000);
+}
+
 async function uploadToSendRec(screenBlob, webcamBlob, mimeType) {
   const config = await getAuthConfig();
   if (!config || !config.serverUrl || !config.accessToken) {
@@ -186,7 +247,7 @@ async function uploadToSendRec(screenBlob, webcamBlob, mimeType) {
 
   if (webcamBlob) {
     body.webcamFileSize = webcamBlob.size;
-    body.webcamContentType = mimeType.split(';')[0];
+    body.webcamContentType = (webcamBlob.type || 'video/webm').split(';')[0];
   }
 
   // Step 1: Create video record
@@ -197,17 +258,16 @@ async function uploadToSendRec(screenBlob, webcamBlob, mimeType) {
     'Authorization': `Bearer ${token}`,
     'Content-Type': 'application/json'
   };
-  const orgData = await browser.storage.local.get(['popupWorkspace']);
-  if (orgData.popupWorkspace) {
-    createHeaders['X-Organization-Id'] = orgData.popupWorkspace;
+  if (config.organizationId) {
+    createHeaders['X-Organization-Id'] = config.organizationId;
   }
 
-  const createRes = await fetch(`${serverUrl}/api/videos`, {
+  const createRes = await fetchWithStallDetection(`${serverUrl}/api/videos`, {
     method: 'POST',
     credentials: 'include',
     headers: createHeaders,
     body: JSON.stringify(body)
-  });
+  }, 30000, 'Create video request');
 
   if (!createRes.ok) {
     const errText = await createRes.text();
@@ -221,11 +281,11 @@ async function uploadToSendRec(screenBlob, webcamBlob, mimeType) {
   recordingState.progress = 30;
   broadcastState();
 
-  const uploadRes = await fetch(uploadUrl, {
+  const uploadRes = await fetchWithStallDetection(uploadUrl, {
     method: 'PUT',
     headers: { 'Content-Type': body.contentType },
     body: screenBlob
-  });
+  }, getUploadTimeout(screenBlob.size), 'Screen upload');
 
   if (!uploadRes.ok) {
     throw new Error(`Failed to upload video: ${uploadRes.status}`);
@@ -236,11 +296,11 @@ async function uploadToSendRec(screenBlob, webcamBlob, mimeType) {
 
   // Upload webcam if present
   if (webcamBlob && videoData.webcamUploadUrl) {
-    const wcRes = await fetch(videoData.webcamUploadUrl, {
+    const wcRes = await fetchWithStallDetection(videoData.webcamUploadUrl, {
       method: 'PUT',
       headers: { 'Content-Type': body.webcamContentType },
       body: webcamBlob
-    });
+    }, getUploadTimeout(webcamBlob.size), 'Webcam upload');
     if (!wcRes.ok) {
       console.warn('Webcam upload failed:', wcRes.status);
     }
@@ -250,7 +310,7 @@ async function uploadToSendRec(screenBlob, webcamBlob, mimeType) {
   broadcastState();
 
   // Step 3: Mark as ready
-  await fetch(`${serverUrl}/api/videos/${id}`, {
+  const finalizeRes = await fetchWithStallDetection(`${serverUrl}/api/videos/${id}`, {
     method: 'PATCH',
     credentials: 'include',
     headers: {
@@ -258,7 +318,11 @@ async function uploadToSendRec(screenBlob, webcamBlob, mimeType) {
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({ status: 'ready' })
-  });
+  }, 30000, 'Finalize video request');
+
+  if (!finalizeRes.ok) {
+    throw new Error(`Failed to finalize video: ${finalizeRes.status}`);
+  }
 
   // Done
   recordingState.progress = 100;
@@ -294,7 +358,7 @@ async function refreshAccessToken(serverUrl) {
 
 async function getAuthConfig() {
   const syncConfig = await browser.storage.sync.get(['serverUrl']);
-  const localConfig = await browser.storage.local.get(['accessToken']);
+  const localConfig = await browser.storage.local.get(['accessToken', 'popupWorkspace']);
 
   const serverUrl = syncConfig.serverUrl || 'https://app.sendrec.eu';
   let token = localConfig.accessToken;
@@ -311,7 +375,7 @@ async function getAuthConfig() {
     }
   }
 
-  return { serverUrl, accessToken: token };
+  return { serverUrl, accessToken: token, organizationId: localConfig.popupWorkspace || null };
 }
 
 function getSupportedMimeType() {
