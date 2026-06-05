@@ -1,10 +1,12 @@
-# SendRec Browser Extensions
+# SendRec x 24Slides Browser Extensions
+
+This repository is a fork of [sendrec/browser-extensions](https://github.com/sendrec/browser-extensions), adapted for 24Slides company usage. The 24Slides fork adds custom branding, a self-hosted SendRec endpoint, and a password reset button.
 
 This repository contains the SendRec browser extensions for Chrome/Chromium and Firefox.
 
-Both extensions let you record your screen and upload recordings directly to [SendRec](https://app.sendrec.eu) or a self-hosted SendRec instance.
+Both extensions let you record your screen and upload recordings directly to a self-hosted SendRec instance.
 
-[![Available in the Chrome Web Store](https://developer.chrome.com/static/docs/webstore/branding/image/tbyBjqi7Zu733AAKA5n4.png)](https://chromewebstore.google.com/detail/sendrec-screen-recorder/jfiogpjfjfokmdhhpdnekjndcklfjpga) [![Firefox Get the Add-on](https://blog.mozilla.org/addons/files/2015/11/get-the-addon.png)](https://addons.mozilla.org/addon/sendrec-screen-recorder)
+[![Available in the Chrome Web Store](https://developer.chrome.com/static/docs/webstore/branding/image/tbyBjqi7Zu733AAKA5n4.png)](https://chromewebstore.google.com/detail/sendrec-x-24slides-screen/lepaenemgdomklgoladkiihhgjddncna) [![Firefox Get the Add-on](https://blog.mozilla.org/addons/files/2015/11/get-the-addon.png)](https://addons.mozilla.org/addon/sendrec-x-24slides-recorder)
 
 ## Repository Contents
 
