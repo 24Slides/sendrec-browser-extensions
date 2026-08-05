@@ -2,7 +2,7 @@
   "manifest_version": 2,
   "name": "SendRec x 24Slides Screen Recorder",
   "description": "Record your screen and upload to SendRec x 24Slides",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "browser_specific_settings": {
     "gecko": {
       "id": "sendrec-24slides-plugin@sendrec",
